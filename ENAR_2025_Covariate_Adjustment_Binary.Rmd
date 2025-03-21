@@ -1,0 +1,544 @@
+---
+title: "Hands-On Tutorials for Covariate Adjustment in Randomized Trials"
+subtitle: "Binary Outcomes: Standardization (G-Computation)"
+author: "Josh Betz (jbetz@jhu.edu), Kelly Van Lancker (kvanlan3@jhu.edu), and Michael Rosenblum (mrosen@jhu.edu)"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+header-includes:
+   - \usepackage{amsmath}
+output:
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    toc_depth: 2
+    number_sections: TRUE  ## if you want number sections at each table header
+    theme: united
+    highlight: tango
+    code_folding: show
+---
+
+```{r Check-Packages, include = FALSE, echo = FALSE, message = FALSE}
+installed_packages <- installed.packages()[, "Package"]
+
+if(!"config" %in% installed_packages){
+  stop(
+    "Required packages not installed: ", 
+    paste(missing_packages, collapse = ","), ". ",
+    "Run `0_Install_Required_Packages.R`."
+  )
+}
+
+parameters_report <-
+  config::get(
+    config = "report_parameters",
+    file = file.path(here::here(), "config.yml")
+  )
+
+required_packages <-
+  with(
+    data = parameters_report,
+    c(cran_packages,
+      gsub(
+        pattern = "^[A-Za-z0-9\\_\\.\\-]*/",
+        replacement = "",
+        x = github_packages
+      )
+    )
+  )
+
+missing_packages <-
+  setdiff(
+    x = required_packages,
+    y = installed_packages
+  )
+
+if(length(missing_packages) > 0){
+  stop(
+    "Required packages not installed: ", 
+    paste(missing_packages, collapse = ","), ". ",
+    "Run `0_Install_Required_Packages.R`."
+  )
+}
+
+sim_miii_data_path <-
+  file.path(here::here(), "Simulated_MISTIE_III.Rdata")
+
+if(!file.exists(sim_miii_data_path)){
+  stop(
+    "Example data does not exist."
+  )
+} else {
+  temp_environment <- new.env()
+  
+  load(
+    file = sim_miii_data_path,
+    envir = temp_environment
+  )
+  
+  rename_params <-
+    c("parameters_report")
+  
+  import_objects <-
+    setdiff(
+      x = names(temp_environment),
+      y = rename_params
+    )
+  
+  for(i in 1:length(import_objects)){
+    assign(
+      x = import_objects[i],
+      value = get(x = import_objects[i], envir = temp_environment)
+    )
+  }
+  
+  rm(temp_environment)
+}
+```
+
+
+
+
+```{r Report-Setup, include = FALSE, echo = FALSE, message = FALSE}
+library(cobalt)
+library(dplyr)
+library(ggplot2)
+library(ggsci)
+library(kableExtra)
+library(pwr)
+library(rpact)
+library(xfun)
+
+
+
+
+### Graphic Parameters #########################################################
+color_palette_1 <-
+  ggsci::scale_color_lancet()
+fill_palette_1 <-
+  ggsci::scale_fill_lancet()
+
+color_palette_2 <-
+  ggsci::scale_color_nejm()
+fill_palette_2 <-
+  ggsci::scale_fill_nejm()
+
+color_palette_3 <-
+  ggsci::scale_color_bmj()
+fill_palette_3 <-
+  ggsci::scale_fill_bmj()
+
+color_palette_4 <-
+  ggsci::scale_color_aaas()
+fill_palette_4 <-
+  ggsci::scale_fill_aaas()
+
+with(
+  data = parameters_report$ggplot_parameters,
+  expr = {
+    assign(
+      x = "plot_theme",
+      value =
+        theme_bw() +
+      theme(
+        axis.text.x = 
+          element_text(
+            size = axis_text_size,
+            face = axis_text_face
+          ),
+        axis.text.y = 
+          element_text(
+            size = axis_text_size,
+            face = axis_text_face
+          ),
+        axis.title = 
+          element_text(
+            size = axis_title_size,
+            face = axis_title_face,
+          ),
+        strip.text =
+          element_text(
+            size = facet_text_size,
+            face = facet_text_face,
+          ),
+        plot.title =
+          element_text(
+            size = plot_title_size,
+            face = plot_title_face
+          ),
+        legend.text =
+          element_text(
+            size = legend_text_size,
+            face = legend_text_face
+          ),
+        legend.title =
+          element_text(
+            size = legend_title_size,
+            face = legend_title_face,
+          ),
+        legend.position = legend_position
+      ),
+      pos = .GlobalEnv
+    )
+  }
+)
+
+
+fig_w <- parameters_report$opts_chunk$fig_width
+fig_h <- parameters_report$opts_chunk$fig_height
+
+### Chunk Parameters ###########################################################
+with(
+  data = 
+    parameters_report$opts_chunk,
+  expr = {
+    knitr::opts_chunk$set(
+      collapse = collapse,
+      echo = echo,
+      message = message,
+      error = error,
+      purl = purl,
+      results = results,
+      fig.path = fig_path,
+      fig.width = fig_width,
+      fig.height = fig_height,
+      fig.align = fig_align,
+      out.width = out_width,
+      dpi = dpi
+    )
+  }
+)
+```
+
+
+
+## Study Descriptives {.tabset}
+
+### Covariates: By Treatment, Aggregate {.smaller}
+
+```{r Covariate-Summaries}
+table1::table1(
+  x = ~ 
+    age + male + hx_cvd + hx_hyperlipidemia +
+    on_anticoagulants + on_antiplatelets +
+    ich_location + ich_s_volume + ivh_s_volume + 
+    gcs_category |
+    arm,
+  data = sim_miii
+)
+```
+
+
+
+
+### Covariate Balance
+
+```{r Covariate-Balance}
+cobalt::bal.tab(
+  x = 
+    sim_miii %>% 
+    dplyr::select(
+      age, male, on_antiplatelets, ich_location, ich_s_volume,
+      ivh_s_volume, gcs_category
+    ),
+  treat = sim_miii$arm,
+  binary = "std",
+  continuous = "std",
+  s.d.denom = "pooled"
+)
+```
+
+
+
+
+### Outcomes:
+
+```{r Table-Outcomes}
+table1::table1(
+  x = ~ 
+    mrs_365d +
+    mrs_365d_binary_factor |
+    arm,
+  data = sim_miii
+)
+```
+
+
+
+
+### Crude Estimates
+
+```{r Crude-Estimates}
+y1_hat <-
+  with(
+    data = subset(sim_miii, arm == "surgical"),
+    mean(mrs_365d_binary, na.rm = TRUE)
+  )
+y0_hat <-
+  with(
+    data = subset(sim_miii, arm == "medical"),
+    mean(mrs_365d_binary, na.rm = TRUE)
+  )
+
+# Risk Difference
+y1_hat - y0_hat
+
+# Risk Ratio
+y1_hat/y0_hat
+
+# Odds Ratio
+(y1_hat*(1 - y0_hat))/(y0_hat*(1 - y1_hat))
+```
+
+
+
+
+--------------------------------------------------------------------------------
+
+
+
+
+## Unadjusted Analysis {.tabset}
+
+### Fitting Logistic Model
+
+```{r Fit-Unadjusted-Model, echo = TRUE}
+mrs_unadjusted_logistic_glm <-
+  stats::glm(
+    formula = mrs_365d_binary ~ arm,
+    data = sim_miii,
+    family = binomial(link = "logit")
+  )
+summary(mrs_unadjusted_logistic_glm)
+```
+
+
+
+
+### Generating Unadjusted Predictions
+
+```{r Generate-Unadjusted-Predictions}
+pr_outcome_unadj_control <-
+  stats::predict(
+    object = mrs_unadjusted_logistic_glm,
+    newdata = 
+      within(data = sim_miii,
+             expr = {arm = "medical"}),
+    type = "response"
+  )
+
+pr_outcome_unadj_treatment <-
+  stats::predict(
+    object = mrs_unadjusted_logistic_glm,
+    newdata = 
+      within(data = sim_miii,
+             expr = {arm = "surgical"}),
+    type = "response"
+  )
+
+table(pr_outcome_unadj_control)
+table(pr_outcome_unadj_treatment)
+```
+
+
+
+### Average & Contrast Predictions
+
+```{r Contrast-Average-Unadjusted-Predictions 1}
+e_y_0_unadj <- mean(pr_outcome_unadj_control)
+e_y_1_unadj <- mean(pr_outcome_unadj_treatment)
+
+# Risk Difference
+e_y_1_unadj - e_y_0_unadj
+# Relative Risk
+e_y_1_unadj/e_y_0_unadj
+# Odds Ratio
+(e_y_1_unadj*(1 - e_y_0_unadj))/
+  (e_y_0_unadj*(1 - e_y_1_unadj))
+```
+
+
+
+
+### Compare with Logistic GLM
+
+```{r Compute-Unadjusted-Contrasts-from-Model}
+unadj_glm_beta <- coef(mrs_unadjusted_logistic_glm)
+pr_medical <-
+  plogis(unadj_glm_beta["(Intercept)"])
+
+pr_surgical <-
+  plogis(unadj_glm_beta["(Intercept)"] +
+           unadj_glm_beta["armsurgical"])
+
+pr_surgical - pr_medical # Risk Difference
+pr_surgical/pr_medical # Relative Risk
+exp(unadj_glm_beta["armsurgical"]) # Odds Ratio
+```
+
+
+
+
+### Worked Example: Unadjusted
+
+```{r Compute-Unadjusted-ATE}
+source("g_computation.R")
+source("boot_p_value.R")
+library(boot)
+
+set.seed(12345) # Set seed for Reproducibility
+
+rd_unadjusted_result <-
+  analysis_g_computation(
+    data = sim_miii,
+    formula = mrs_365d_binary ~ tx,
+    family = binomial(link = "logit"),
+    estimand = "difference", # "ratio" or "oddsratio"
+    treatment_column = "tx",
+    se_method = "bootstrap", # "none" "influence" "score"
+    verbose = TRUE # Needed for p-value, not CI
+  )
+
+with(
+  data = rd_unadjusted_result$result,
+  expr = {
+    c(
+      "Estimate" = estimate,
+      "SE" = se_boot_df_adjusted,
+      "LCL" = lcl_bca_df_adjusted_0.95,
+      "UCL" = ucl_bca_df_adjusted_0.95
+    )
+  }
+)
+
+boot_p_value(
+  boot_object = rd_unadjusted_result$boot_object,
+  ci_method = "bca",
+  null_value = 0,
+  # Adjust CI width for DF in model
+  var_adjust = rd_unadjusted_result$result$variance_factor
+)
+```
+
+
+
+
+--------------------------------------------------------------------------------
+
+
+
+
+## Covariate Adjusted Analyses {.tabset}
+
+
+### Fit Adjusted Logit GLM
+
+```{r Fit-Adjusted-Model-1}
+mrs_adjusted_logistic_glm <-
+  stats::glm(
+    formula = 
+      mrs_365d_binary ~ arm +
+      age + 
+      male +
+      hx_cvd +
+      hx_hyperlipidemia +
+      on_anticoagulants +
+      on_antiplatelets +
+      ich_location +
+      ich_s_volume +
+      ivh_s_volume + 
+      gcs_category,
+    data = sim_miii,
+    family =
+      binomial(link = "logit")
+  )
+
+summary(mrs_adjusted_logistic_glm)
+```
+
+
+
+
+### Generating Adjusted Predictions
+
+```{r Generate-Adjusted-Predictions}
+pr_outcome_adj_control <-
+  stats::predict(
+    object = mrs_adjusted_logistic_glm,
+    newdata = 
+      within(data = sim_miii,
+             expr = {arm = "medical"}),
+    type = "response"
+  )
+
+pr_outcome_adj_treatment <-
+  stats::predict(
+    object = mrs_adjusted_logistic_glm,
+    newdata = 
+      within(data = sim_miii,
+             expr = {arm = "surgical"}),
+    type = "response"
+  )
+
+par(mfrow = c(1, 2))
+hist(
+  pr_outcome_adj_treatment,
+  breaks = "fd"
+)
+
+hist(
+  pr_outcome_adj_control,
+  breaks = "fd"
+)
+```
+
+
+
+
+### Results: Adjusted
+
+```{r Compute-Adjusted-ATE}
+rd_adjusted_result <-
+  analysis_g_computation(
+    data = sim_miii,
+    formula = mrs_365d_binary ~ tx + age + male + hx_cvd + hx_hyperlipidemia +
+      on_anticoagulants + on_antiplatelets + ich_location + ich_s_volume +
+      ivh_s_volume + gcs_category,
+    family = binomial(link = "logit"),
+    estimand = "difference", # "ratio" or "oddsratio"
+    treatment_column = "tx",
+    se_method = "bootstrap", # "none" "influence" "score"
+    verbose = TRUE # Needed for p-value, not CI
+  )
+
+with(
+  data = rd_adjusted_result$result,
+  expr = {
+    c(
+      "Estimate" = estimate,
+      "SE" = se_boot_df_adjusted,
+      "LCL" = lcl_bca_df_adjusted_0.95,
+      "UCL" = ucl_bca_df_adjusted_0.95
+    )
+  }
+)
+
+boot_p_value(
+  boot_object = rd_adjusted_result$boot_object,
+  ci_method = "bca",
+  null_value = 0,
+  # Adjust CI width for DF in model
+  var_adjust = rd_adjusted_result$result$variance_factor
+)
+```
+
+
+
+
+--------------------------------------------------------------------------------
+
+## Comparing Analysis Methods:
+
+  - $Var(\theta) = (SE(\theta))^2$
+  - Relative Efficiency: $RE_{A/U} = Var(\theta_{U})/Var(\theta_{A})$
+  - Relative Change in Variance: $RCV_{A/U} = \frac{Var(\theta_{A}) - Var(\theta_{U})}{Var(\theta_{U})} = \frac{1}{RE_{A/U}} - 1$
+  - Relative Change in Precision: $RCP_{A/U} = \frac{1/Var(\theta_{A}) - 1/Var(\theta_{U})}{1/Var(\theta_{U})} = Var(\theta_{U})/Var(\theta_{A}) - 1 = RE_{A/U} - 1$
+  
