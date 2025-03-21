@@ -61,6 +61,9 @@ this will facilitate compiling R packages from source. After these steps
 have been installed, additional packages will need to be installed from
 CRAN and GitHub.
 
+[Here is a direct link to download the repo as a .zip
+file](https://github.com/CovariateAdjustment/ENAR2025/archive/refs/heads/main.zip)
+
 ``` r
 # NOTE: INSTALL Rtools First: https://cran.r-project.org/bin/windows/Rtools/
 
