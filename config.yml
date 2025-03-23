@@ -26,11 +26,11 @@ default:
 report_parameters:
   opts_chunk:
     collapse: TRUE
-    echo: TRUE
+    echo: FALSE
     message: TRUE
     error: TRUE
     purl: FALSE
-    results: "markup"
+    results: "asis"
     fig_path: "figures"
     fig_width: 12
     fig_height: 12
@@ -60,6 +60,7 @@ report_parameters:
 binary_example_mistie:
   example_data_file_name: "Simulated_MISTIE_III.Rdata"
   example_output_file_name: "Simulated_MISTIE_III_output.Rdata"
+  example_output_file_name_gsd: "Simulated_MISTIE_III_output_gsd.Rdata"
   rng_seed: 12345
   alpha_design: 0.05
   power_design: 0.80
@@ -67,9 +68,13 @@ binary_example_mistie:
   p0_design: 0.25
   p1_design: 0.38
   pr_missing: 0.20
+  enroll_start: "2013-12-30"
+  enroll_end: "2017-08-15"
   information_rates:
     - 0.50
     - 0.75
     - 1.00
-  type_of_design: "asOF"
-  type_beta_spending: "bsOF"
+  type_of_design_asof: "asOF"
+  type_beta_spending_asof: "none"
+  type_of_design_asof_bsof: "asOF"
+  type_beta_spending_asof_bsof: "bsOF"

@@ -1,0 +1,584 @@
+---
+title: "Hands-On Tutorials for Covariate Adjustment in Randomized Trials"
+subtitle: "Group Sequential & Information Monitoring Designs"
+author: "Josh Betz (jbetz@jhu.edu), Kelly Van Lancker (kvanlan3@jhu.edu), and Michael Rosenblum (mrosen@jhu.edu)"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+header-includes:
+   - \usepackage{amsmath}
+output:
+  ioslides_presentation:
+    css: slides.css
+    widescreen: TRUE
+    self_contained: TRUE
+bibliography: "../../bibtex_files/covariate_adjustment.bib"
+---
+
+```{r Check-Packages, include = FALSE, echo = FALSE, message = FALSE}
+parameters_report <-
+  config::get(
+    config = "report_parameters",
+    file = file.path(here::here(), "config.yml")
+  )
+
+parameters_example <-
+  config::get(
+    config = "binary_example_mistie",
+    file = file.path(here::here(), "config.yml")
+  )
+
+installed_packages <- installed.packages()[, "Package"]
+
+required_packages <-
+  with(
+    data = parameters_report,
+    c(cran_packages,
+      gsub(
+        pattern = "^[A-Za-z0-9\\_\\.\\-]*/",
+        replacement = "",
+        x = github_packages
+      )
+    )
+  )
+
+missing_packages <-
+  setdiff(
+    x = required_packages,
+    y = installed_packages
+  )
+
+if(length(missing_packages) > 0){
+  stop(
+    "Required packages not installed: ", 
+    paste(missing_packages, collapse = ","), ". ",
+    "See `cran_packages` and `github_packages` in the configuration file."
+  )
+}
+
+example_output_path <-
+  file.path(here::here(), parameters_example$example_output_file_name_gsd)
+
+if(!file.exists(example_output_path)){
+  stop(
+    "Example data does not exist."
+  )
+} else {
+  temp_environment <- new.env()
+  
+  load(
+    file = example_output_path,
+    envir = temp_environment
+  )
+  
+  rename_params <-
+    c("parameters_report")
+  
+  import_objects <-
+    setdiff(
+      x = names(temp_environment),
+      y = rename_params
+    )
+  
+  for(i in 1:length(import_objects)){
+    assign(
+      x = import_objects[i],
+      value = get(x = import_objects[i], envir = temp_environment)
+    )
+  }
+  
+  rm(temp_environment)
+}
+```
+
+
+
+
+```{r Report-Setup, include = FALSE, echo = FALSE, message = FALSE}
+library(dplyr)
+library(ggplot2)
+library(ggsci)
+library(kableExtra)
+library(pwr)
+library(rpact)
+library(xfun)
+
+
+
+
+### Graphic Parameters #########################################################
+color_palette_1 <-
+  ggsci::scale_color_lancet()
+fill_palette_1 <-
+  ggsci::scale_fill_lancet()
+
+color_palette_2 <-
+  ggsci::scale_color_nejm()
+fill_palette_2 <-
+  ggsci::scale_fill_nejm()
+
+color_palette_3 <-
+  ggsci::scale_color_bmj()
+fill_palette_3 <-
+  ggsci::scale_fill_bmj()
+
+color_palette_4 <-
+  ggsci::scale_color_aaas()
+fill_palette_4 <-
+  ggsci::scale_fill_aaas()
+
+with(
+  data = parameters_report$ggplot_parameters,
+  expr = {
+    assign(
+      x = "plot_theme",
+      value =
+        theme_bw() +
+      theme(
+        axis.text.x = 
+          element_text(
+            size = axis_text_size,
+            face = axis_text_face
+          ),
+        axis.text.y = 
+          element_text(
+            size = axis_text_size,
+            face = axis_text_face
+          ),
+        axis.title = 
+          element_text(
+            size = axis_title_size,
+            face = axis_title_face,
+          ),
+        strip.text =
+          element_text(
+            size = facet_text_size,
+            face = facet_text_face,
+          ),
+        plot.title =
+          element_text(
+            size = plot_title_size,
+            face = plot_title_face
+          ),
+        legend.text =
+          element_text(
+            size = legend_text_size,
+            face = legend_text_face
+          ),
+        legend.title =
+          element_text(
+            size = legend_title_size,
+            face = legend_title_face,
+          ),
+        legend.position = legend_position
+      ),
+      pos = .GlobalEnv
+    )
+  }
+)
+
+
+fig_w <- parameters_report$opts_chunk$fig_width
+fig_h <- parameters_report$opts_chunk$fig_height
+
+### Chunk Parameters ###########################################################
+with(
+  data = 
+    parameters_report$opts_chunk,
+  expr = {
+    knitr::opts_chunk$set(
+      collapse = collapse,
+      echo = echo,
+      message = message,
+      error = error,
+      purl = purl,
+      results = results,
+      fig.path = fig_path,
+      fig.width = fig_width,
+      fig.height = fig_height,
+      fig.align = fig_align,
+      out.width = out_width,
+      dpi = dpi
+    )
+  }
+)
+```
+
+
+
+
+## Outline
+
+  - Overview: Open Source Software:
+    - Group Sequential Designs, Information Monitoring
+  - Review Fixed Sample Size Plans in **R**
+  - Convert Fixed Sample Size to Group Sequential Design
+  - Analyze Example Datasets
+
+
+
+
+## Software
+
+  - Planning, Analyzing Group Sequential Designs:
+    - [rpact](https://www.rpact.org): [Tutorials & Vignettes](https://www.rpact.org/#learn-to-use-rpact)
+    - [gsDesign](https://keaven.github.io/gsDesign/): [Web Interface](https://keaven.github.io/gsd-shiny/) and [related software](https://keaven.github.io/software/)
+  - Planning, Monitoring, Analyzing Information Monitored Designs
+    - [impart](https://jbetz-jhu.github.io/impart/) - [Tutorials &  Vignettes](https://jbetz-jhu.github.io/impart/articles/)
+
+
+
+
+## MISTIE-III Trial - Effect Size $h$: [@Hanley2019] {.smaller}
+
+  - Outcome: Dichotomized Modified Rankin Scale: 
+    - $0-3 \rightarrow 1$: Good Functional Outcome - Alive, Independent
+    - $4-6 \rightarrow 0$: Poor Functional Outcome
+  - Assumed $Pr\{Y|A = 0\} = \pi_{0} \approx$ `r p0_design`: 
+  - Detect Risk Difference $\delta_{RD} \ge$ `r risk_difference_design`: $Pr\{Y|A = 1\} = \pi_{1} \ge$ `r p1_design`
+  - Power = `r power_design`, Type I Error = `r alpha_design`: Two-sided test, `r 100*pr_missing`% missing data
+    - Just for demonstration: Not values from original study
+
+```{r Design-Parameters, echo = TRUE, eval = FALSE}
+p0_design <- 0.25
+risk_difference_design <- 0.13
+p1_design <- p0_design + risk_difference_design
+alpha_design <- 0.05
+power_design <- 0.80
+pr_missing <- 0.20
+```
+
+
+
+## MISTIE-III Trial - Fixed Sample Size $N$: {.smaller}
+
+  - Determine Effect size $h = 2\left(sin^{-1}\left(\sqrt{\pi_{1}}\right) - sin^{-1}\left(\sqrt{\pi_{0}}\right) \right) =$ `r round(es_h_design, digits = 3)`
+
+```{r Effect-Size-h, echo = TRUE, results = "markup"}
+pwr::ES.h(p1 = p1_design, p2 = p0_design)
+```
+
+  - Determine $N$ **per arm** of complete observations
+
+```{r N-Per-Arm-Unadjusted, echo = TRUE, results = "markup"}
+n_per_arm_fixed <-
+  pwr::pwr.2p.test(
+    h = es_h_design,
+    sig.level = alpha_design,
+    power = power_design
+  )$n %>% ceiling()
+
+n_per_arm_fixed
+```
+
+  - We need `r 2*n_per_arm_fixed` complete outcomes: Divide by fraction complete = `r (1 - pr_missing)` $\rightarrow$ `r n_total_fixed` participants
+
+```{r N-Per-Arm-Adjusted-Missing, echo = TRUE, results = "markup"}
+ceiling(2*n_per_arm_fixed/(1 - pr_missing))
+```
+
+
+
+
+## Group Sequential Design (GSD) {.smaller}
+
+  - 3 Stages: 2 Interim Analyses (50%, 75% of $N$) + Final Analysis
+  - Efficacy Bounds: O'Brien Fleming $\alpha$-spending Functions - No Futility
+
+```{r Set-Up-GSD, echo = TRUE, eval = FALSE}
+information_rates <- c(0.50, 0.75, 1.00)
+type_of_design_asof <- "asOF"
+type_beta_spending_asof <- "none"
+
+trial_design <-
+  rpact::getDesignGroupSequential(
+    alpha = alpha_design,
+    beta = 1 - power_design,
+    sided = test_sides,
+    informationRates = information_rates,
+    typeOfDesign = type_of_design_asof,
+    typeBetaSpending = type_beta_spending_asof
+  )
+
+plot(trial_design) # Plot Boundaries
+```
+
+
+
+
+## O'Brien-Fleming: Efficacy Only {.smaller}
+
+```{r Plot-GSD-ASOF-Boundaries, fig.width = 8, fig.height = 8, out.width = "50%", out.height = "50%"}
+plot(trial_design_asof)
+```
+
+
+
+
+## O'Brien-Fleming: Efficacy & Futility {.smaller}
+
+```{r Plot-GSD-ASOF-BSOF-Boundaries, fig.width = 8, fig.height = 8, out.width = "50%", out.height = "50%"}
+plot(trial_design_asof_bsof)
+```
+
+
+
+## Compute Sample Size Adjustment
+
+  - Up to 3 interim analyses: $\uparrow N$ to maintain Type I error $\alpha$ 
+
+```{r Compute-Inflation-Factor, eval = FALSE, echo = TRUE}
+inflation_factor <-
+  rpact::getDesignCharacteristics(
+    design = trial_design_asof
+  )$inflationFactor
+n_total_gsd_asof <-
+  ceiling(2*n_per_arm_fixed*inflation_factor_asof)
+n_at_analyses_asof <-
+  ceiling(information_rates*n_total_gsd_asof)
+```
+  
+  - Maximum Sample Size is `r round(x = 100*(inflation_factor_asof - 1), digits = 1)`% larger than Fixed Sample Size
+  - Potential to stop at $N =$ `r n_at_analyses_asof[1]` or `r n_at_analyses_asof[2]`
+
+
+
+
+# Analyzing Group Sequential Designs
+
+
+
+
+## Using the `impart` Package: {.smaller}
+
+  - **I**nformation **m**onitoring for **p**recision **a**daptive **r**andomized **t**rials
+    - Using Covariate Adjustment in Group Sequential Designs: Focus
+    - Designing, Monitoring, Analyzing trials with Information Monitoring: Later
+  - Group Sequential Designs:
+    - Set up a GSD with [rpact](https://www.rpact.org) package
+    - Set up a `monitored_design`: Stores settings for analyses: $N_{max}$, RNG seeds, $\theta_{0}$
+    - Perform analyses: gives an updated `monitored_design` to pass to next analysis
+      - Keep going until stop for efficacy, futility, or fail to reject
+    - Final analysis will contain entire history of study:
+  - Users can supply their own functions for analysis:
+    - Standardization (Continuous, binomial); Marginal HR (Time-to-Event)
+
+
+
+
+## `impart` - Setting Up a Design {.smaller}
+
+```{r Set-Up-Design, echo = TRUE, eval = FALSE}
+# Set up monitored design - **See .Rmd for details**
+monitored_design_asof <-
+  initialize_monitored_design(
+    # Trial Design set up using rpact
+    trial_design = trial_design_asof,
+    # Null value of parameter
+    null_value = 0,
+    # Maximum Sample Size
+    maximum_sample_size = n_total_gsd_asof,
+    # Target precision: Based on assumed effect, Power, Alpha
+    information_target = information_adaptive_asof,
+    # Enforce Independent Increments with Orthogonalization
+    orthogonalize = TRUE,
+    # RNG Seed for analyses
+    rng_seed_analysis = 54321
+  )
+```
+
+
+
+
+## Interim Analysis 1/3: O-F Efficacy {.smaller}
+
+```{r Analysis-1-ASOF, echo = TRUE, eval = FALSE}
+interim_analysis_asof_1 <-
+  monitored_analysis(
+    data = sim_miii_asof_ia_1, # Current Data
+    monitored_design = monitored_design_asof, # Design Details
+    estimation_function = standardization, # Function used for analysis
+    estimation_arguments = # Arguments that `estimation_function` uses
+      list(
+        estimand = "difference",
+        outcome_formula = 
+          mrs_356d_binary ~ tx + age + male + hx_cvd + hx_hyperlipidemia +
+          on_anticoagulants + on_antiplatelets + ich_location + ich_s_volume +
+          ivh_s_volume + gcs_category,
+        family = binomial,
+        treatment_column = "tx",
+        outcome_indicator_column = ".r_3"
+      ),
+    # Optional function to adjust variance (e.g. for # of covariates)
+    correction_function = standardization_correction
+  )
+```
+
+
+
+
+## Interim Analysis 1 Results: {.smaller}
+
+```{r Analysis-1-ASOF-Result, echo = TRUE, results = 'markup'}
+# Decision
+interim_analysis_asof_1$interim_analysis_1$decision_detail
+
+# Test statistics, Boundaries
+interim_analysis_asof_1$interim_analysis_1$decision_data
+```
+
+  - Test statistic hasn't exceeded any efficacy boundaries
+
+
+
+
+## Interim Analysis 2/3: O-F Efficacy {.smaller}
+
+```{r Analysis-2-ASOF, echo = TRUE, eval = FALSE}
+interim_analysis_asof_2 <-
+  monitored_analysis(
+    
+    data = sim_miii_asof_ia_2, # Pass updated data
+    monitored_design = interim_analysis_asof_1, # Pass previous analysis
+    
+    # Specify what to do for interim analysis 2
+    estimation_function = standardization,
+    estimation_arguments = 
+      list(
+        estimand = "difference",
+        outcome_formula = 
+          mrs_356d_binary ~ tx + age + male + hx_cvd + hx_hyperlipidemia +
+          on_anticoagulants + on_antiplatelets + ich_location + ich_s_volume +
+          ivh_s_volume + gcs_category,
+        family = binomial,
+        treatment_column = "tx",
+        outcome_indicator_column = ".r_3"
+      ),
+    
+    correction_function = standardization_correction
+  )
+```
+
+
+
+
+## Interim Analysis 2 Results: {.smaller}
+
+```{r Analysis-2-ASOF-Result, echo = TRUE, results = 'markup'}
+# Decision
+interim_analysis_asof_2$interim_analysis_2$decision_detail
+
+# Test statistics, Boundaries
+interim_analysis_asof_2$interim_analysis_2$decision_data
+
+# Entire history of results are nested within the result
+names(interim_analysis_asof_2)
+```
+
+  - Test statistic hasn't exceeded any efficacy boundaries
+
+
+## Final Analysis: O-F Efficacy {.smaller}
+
+```{r Analysis-3-ASOF, echo = TRUE, eval = FALSE}
+final_analysis_asof <-
+  monitored_analysis(
+    
+    data = sim_miii_asof_ia_3, # Pass updated data
+    monitored_design = interim_analysis_asof_2, # Pass previous analysis
+    
+    # Specify what to do for interim analysis 2
+    estimation_function = standardization,
+    estimation_arguments = 
+      list(
+        estimand = "difference",
+        outcome_formula = 
+          mrs_356d_binary ~ tx + age + male + hx_cvd + hx_hyperlipidemia +
+          on_anticoagulants + on_antiplatelets + ich_location + ich_s_volume +
+          ivh_s_volume + gcs_category,
+        family = binomial,
+        treatment_column = "tx",
+        outcome_indicator_column = ".r_3"
+      ),
+    
+    correction_function = standardization_correction
+  )
+```
+
+
+
+
+## Final Analysis Results: {.smaller}
+
+```{r Analysis-3-ASOF-Result, echo = TRUE, results = 'markup'}
+# Decision
+final_analysis_asof$final_analysis$decision_detail
+
+# Test statistics, Boundaries
+final_analysis_asof$final_analysis$decision_data
+
+# Entire history of results are nested within the result
+names(final_analysis_asof)
+```
+
+
+
+
+# Add Futility Stopping:
+
+
+
+
+## O-F Efficacy **+ Futility** - Analysis 1 {.smaller}
+
+```{r Analysis-1-ASOF-BSOF, echo = TRUE, eval = FALSE}
+interim_analysis_asof_bsof_1 <-
+  monitored_analysis(
+    
+    data = sim_miii_asof_bsof_ia_1,
+    monitored_design = monitored_design_asof_bsof, # Design Details
+    
+    estimation_function = standardization,
+    estimation_arguments =
+      list(
+        estimand = "difference",
+        outcome_formula = 
+          mrs_356d_binary ~ tx + age + male + hx_cvd + hx_hyperlipidemia +
+          on_anticoagulants + on_antiplatelets + ich_location + ich_s_volume +
+          ivh_s_volume + gcs_category,
+        family = binomial,
+        treatment_column = "tx",
+        outcome_indicator_column = ".r_3"
+      ),
+    correction_function = standardization_correction
+  )
+```
+
+
+
+
+## Interim Analysis 1 Results: {.smaller}
+
+```{r Analysis-1-ASOF-BSOF-Result, echo = TRUE, results = 'markup'}
+# Decision
+interim_analysis_asof_bsof_1$interim_analysis_1$decision_detail
+
+# Test statistics, Boundaries
+interim_analysis_asof_bsof_1$interim_analysis_1$decision_data
+```
+
+  - Recommend to stop: Futility
+
+
+
+
+
+## Conclusions {.smaller}
+
+  - [rpact](https://www.rpact.org) and [gsDesign](https://keaven.github.io/gsDesign/): Great software, vignettes - Also see [@Jennison1999]
+  - Specify Initial Design:
+  - First Analysis: Pass Design, Analysis + Arguments, Data
+  - Additional Analyses:
+    - Pass previous result, Analysis + Arguments, Updated Data
+  - Repeat until stopping criteria met: Each result nested in object
+
+
+## References {.smaller}

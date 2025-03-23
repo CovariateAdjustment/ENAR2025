@@ -1,0 +1,522 @@
+---
+title: "Hands-On Tutorials for Covariate Adjustment in Randomized Trials"
+subtitle: "Binary Outcomes: Standardization (G-Computation)"
+author: "Josh Betz (jbetz@jhu.edu), Kelly Van Lancker (kvanlan3@jhu.edu), and Michael Rosenblum (mrosen@jhu.edu)"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+header-includes:
+   - \usepackage{amsmath}
+output:
+  html_document:
+    self_contained: TRUE
+    toc: TRUE
+    toc_float: TRUE
+    toc_depth: 2
+    number_sections: TRUE  ## if you want number sections at each table header
+    theme: united
+    highlight: tango
+    code_folding: show
+---
+
+```{r Check-Packages, include = FALSE, echo = FALSE, message = FALSE}
+installed_packages <- installed.packages()[, "Package"]
+
+if(!"config" %in% installed_packages){
+  stop(
+    "Required packages not installed: ", 
+    paste(missing_packages, collapse = ","), ". ",
+    "Run `0_Install_Required_Packages.R`."
+  )
+}
+
+parameters_report <-
+  config::get(
+    config = "report_parameters",
+    file = file.path(here::here(), "config.yml")
+  )
+
+required_packages <-
+  with(
+    data = parameters_report,
+    c(cran_packages,
+      gsub(
+        pattern = "^[A-Za-z0-9\\_\\.\\-]*/",
+        replacement = "",
+        x = github_packages
+      )
+    )
+  )
+
+missing_packages <-
+  setdiff(
+    x = required_packages,
+    y = installed_packages
+  )
+
+if(length(missing_packages) > 0){
+  stop(
+    "Required packages not installed: ", 
+    paste(missing_packages, collapse = ","), ". ",
+    "Run `0_Install_Required_Packages.R`."
+  )
+}
+
+sim_miii_data_path <-
+  file.path(here::here(), "Simulated_MISTIE_III.Rdata")
+
+if(!file.exists(sim_miii_data_path)){
+  stop(
+    "Example data does not exist."
+  )
+} else {
+  temp_environment <- new.env()
+  
+  load(
+    file = sim_miii_data_path,
+    envir = temp_environment
+  )
+  
+  rename_params <-
+    c("parameters_report")
+  
+  import_objects <-
+    setdiff(
+      x = names(temp_environment),
+      y = rename_params
+    )
+  
+  for(i in 1:length(import_objects)){
+    assign(
+      x = import_objects[i],
+      value = get(x = import_objects[i], envir = temp_environment)
+    )
+  }
+  
+  rm(temp_environment)
+}
+```
+
+
+
+
+```{r Report-Setup, include = FALSE, echo = FALSE, message = FALSE}
+library(ggplot2)
+library(ggsci)
+library(impart)
+library(kableExtra)
+library(pwr)
+library(rpact)
+
+
+
+
+### Graphic Parameters #########################################################
+color_palette_1 <-
+  ggsci::scale_color_lancet()
+fill_palette_1 <-
+  ggsci::scale_fill_lancet()
+
+color_palette_2 <-
+  ggsci::scale_color_nejm()
+fill_palette_2 <-
+  ggsci::scale_fill_nejm()
+
+color_palette_3 <-
+  ggsci::scale_color_bmj()
+fill_palette_3 <-
+  ggsci::scale_fill_bmj()
+
+color_palette_4 <-
+  ggsci::scale_color_aaas()
+fill_palette_4 <-
+  ggsci::scale_fill_aaas()
+
+with(
+  data = parameters_report$ggplot_parameters,
+  expr = {
+    assign(
+      x = "plot_theme",
+      value =
+        theme_bw() +
+      theme(
+        axis.text.x = 
+          element_text(
+            size = axis_text_size,
+            face = axis_text_face
+          ),
+        axis.text.y = 
+          element_text(
+            size = axis_text_size,
+            face = axis_text_face
+          ),
+        axis.title = 
+          element_text(
+            size = axis_title_size,
+            face = axis_title_face,
+          ),
+        strip.text =
+          element_text(
+            size = facet_text_size,
+            face = facet_text_face,
+          ),
+        plot.title =
+          element_text(
+            size = plot_title_size,
+            face = plot_title_face
+          ),
+        legend.text =
+          element_text(
+            size = legend_text_size,
+            face = legend_text_face
+          ),
+        legend.title =
+          element_text(
+            size = legend_title_size,
+            face = legend_title_face,
+          ),
+        legend.position = legend_position
+      ),
+      pos = .GlobalEnv
+    )
+  }
+)
+
+
+fig_w <- parameters_report$opts_chunk$fig_width
+fig_h <- parameters_report$opts_chunk$fig_height
+
+### Chunk Parameters ###########################################################
+with(
+  data = 
+    parameters_report$opts_chunk,
+  expr = {
+    knitr::opts_chunk$set(
+      collapse = collapse,
+      echo = echo,
+      message = message,
+      error = error,
+      purl = purl,
+      results = results,
+      fig.path = fig_path,
+      fig.width = fig_width,
+      fig.height = fig_height,
+      fig.align = fig_align,
+      out.width = out_width,
+      dpi = dpi
+    )
+  }
+)
+```
+
+
+
+
+## Fixed Sample Size
+
+```{r Design-Parameters}
+set.seed(12345) # Set seed for Reproducibility
+alpha_design <- 0.05
+power_design <- 0.80
+test_sides <- 2
+p0_design <- 0.25
+p1_design <- 0.38
+pr_missing <- 0.20
+
+risk_difference_design <- p1_design - p0_design
+
+risk_difference_design
+
+es_h_design <- pwr::ES.h(p1 = p1_design, p2 = p0_design)
+
+es_h_design
+
+n_per_arm_fixed <-
+  pwr::pwr.2p.test(
+    h = es_h_design,
+    sig.level = alpha_design,
+    power = power_design
+  )$n %>% ceiling()
+
+n_per_arm_fixed
+```
+
+
+
+
+--------------------------------------------------------------------------------
+
+
+
+
+## Set Up Group Sequential Design {.tabset}
+
+
+### O-F: Efficacy Only Setup
+
+```{r Setup-ASOF}
+type_of_design_asof <- "asOF"
+type_beta_spending_asof <- "none"
+information_rates <- c(0.50, 0.75, 1.00)
+
+trial_design_asof <-
+  rpact::getDesignGroupSequential(
+    alpha = alpha_design,
+    beta = 1 - power_design,
+    sided = test_sides,
+    informationRates = information_rates,
+    typeOfDesign = type_of_design_asof,
+    typeBetaSpending = type_beta_spending_asof
+  )
+
+trial_design_asof
+```
+
+
+
+
+### O-F: Efficacy Only Bounds
+
+```{r Plot-ASOF}
+trial_design_asof$criticalValues
+
+plot(trial_design_asof)
+```
+
+
+
+### O-F: Efficacy + Futility Setup
+
+```{r Setup-ASOF-BSOF}
+type_of_design_asof_bsof <- "asOF"
+type_beta_spending_asof_bsof <- "bsOF"
+information_rates <- c(0.50, 0.75, 1.00)
+
+trial_design_asof_bsof <-
+  rpact::getDesignGroupSequential(
+    alpha = alpha_design,
+    beta = 1 - power_design,
+    sided = test_sides,
+    informationRates = information_rates,
+    typeOfDesign = type_of_design_asof_bsof,
+    typeBetaSpending = type_beta_spending_asof_bsof
+  )
+
+trial_design_asof_bsof
+```
+
+
+
+
+### O-F: Efficacy + Futility Bounds
+
+```{r Plot-ASOF-BSOF}
+# Get efficacy/futility bounds
+trial_design_asof_bsof$criticalValues
+trial_design_asof_bsof$futilityBounds
+
+plot(trial_design_asof_bsof)
+```
+
+
+
+
+--------------------------------------------------------------------------------
+
+
+
+
+## Set Up Group Sequential Analyses {.tabset}
+
+For more details, see [impart documentation](https://jbetz-jhu.github.io/impart/)
+
+### Set Information Targets
+
+```{r Calculate-Information-Target-Single-Stage}
+# Precision a.k.a. Information required for 
+information_single_stage <-
+  impart::required_information_single_stage(
+    delta = risk_difference_design,
+    alpha = alpha_design,
+    power = power_design
+  )
+
+information_single_stage
+
+# Inflate information level to account for multiple testing
+information_adaptive_asof <-
+  impart::required_information_sequential(
+    information_single_stage = information_single_stage,
+    trial_design = trial_design_asof
+  )
+
+information_adaptive_asof
+
+information_adaptive_asof_bsof <-
+  impart::required_information_sequential(
+    information_single_stage = information_single_stage,
+    trial_design = trial_design_asof_bsof
+  )
+
+information_adaptive_asof_bsof
+```
+
+
+
+
+### Set Up Monitored Design
+
+```{r Set-Up-Monitored-Designs}
+monitored_design_asof <-
+  initialize_monitored_design(
+    trial_design = trial_design_asof,
+    null_value = 0,
+    maximum_sample_size = 280,
+    information_target = information_adaptive_asof,
+    orthogonalize = TRUE,
+    rng_seed_analysis = 54321
+  )
+
+monitored_design_asof_bsof <-
+  initialize_monitored_design(
+    trial_design = trial_design_asof_bsof,
+    null_value = 0,
+    maximum_sample_size = 280,
+    information_target = information_adaptive_asof_bsof,
+    orthogonalize = TRUE,
+    rng_seed_analysis = 54321
+  )
+
+```
+
+
+
+
+### O-F Efficacy: Analysis 1
+
+```{r ASOF-Analysis-1}
+interim_analysis_asof_1 <-
+  monitored_analysis(
+    data = sim_miii_asof_ia_1,
+    monitored_design = monitored_design_asof,
+    estimation_function = standardization,
+    estimation_arguments = 
+      list(
+        estimand = "difference",
+        outcome_formula = 
+          mrs_365d_binary ~ tx + age + male + hx_cvd + hx_hyperlipidemia +
+          on_anticoagulants + on_antiplatelets + ich_location + ich_s_volume +
+          ivh_s_volume + gcs_category,
+        family = binomial,
+        treatment_column = "tx",
+        outcome_indicator_column = ".r_3"
+      ),
+    correction_function = standardization_correction
+  )
+
+# Decision
+interim_analysis_asof_1$interim_analysis_1$decision_detail
+
+# Test statistics, Boundaries
+interim_analysis_asof_1$interim_analysis_1$decision_data
+```
+
+
+
+
+### O-F Efficacy: Analysis 2
+
+```{r ASOF-Analysis-2}
+interim_analysis_asof_2 <-
+  monitored_analysis(
+    data = sim_miii_asof_ia_2,
+    monitored_design = interim_analysis_asof_1,
+    estimation_function = standardization,
+    estimation_arguments = 
+      list(
+        estimand = "difference",
+        outcome_formula = 
+          mrs_365d_binary ~ tx + age + male + hx_cvd + hx_hyperlipidemia +
+          on_anticoagulants + on_antiplatelets + ich_location + ich_s_volume +
+          ivh_s_volume + gcs_category,
+        family = binomial,
+        treatment_column = "tx",
+        outcome_indicator_column = ".r_3"
+      ),
+    correction_function = standardization_correction
+  )
+
+# Decision
+interim_analysis_asof_2$interim_analysis_2$decision_detail
+
+# Test statistics, Boundaries
+interim_analysis_asof_2$interim_analysis_2$decision_data
+
+# Entire history of results are nested within the result
+names(interim_analysis_asof_2)
+```
+
+
+
+
+### O-F Efficacy: Analysis 3
+
+```{r ASOF-Analysis-3}
+final_analysis_asof <-
+  monitored_analysis(
+    data = sim_miii_asof_final,
+    monitored_design = interim_analysis_asof_2,
+    estimation_function = standardization,
+    estimation_arguments = 
+      list(
+        estimand = "difference",
+        outcome_formula = 
+          mrs_365d_binary ~ tx + age + male + hx_cvd + hx_hyperlipidemia +
+          on_anticoagulants + on_antiplatelets + ich_location + ich_s_volume +
+          ivh_s_volume + gcs_category,
+        family = binomial,
+        treatment_column = "tx",
+        outcome_indicator_column = ".r_3"
+      ),
+    correction_function = standardization_correction
+  )
+
+# Decision
+final_analysis_asof$final_analysis$decision_detail
+
+# Test statistics, Boundaries
+final_analysis_asof$final_analysis$decision_data
+
+# Entire history of results are nested within the result
+names(final_analysis_asof)
+```
+
+
+### O-F Efficacy + Futility: Analysis 1
+
+```{r ASOF-BSOF-Analysis-1}
+interim_analysis_asof_bsof_1 <-
+  monitored_analysis(
+    
+    data = sim_miii_asof_bsof_ia_1,
+    monitored_design = monitored_design_asof_bsof, # Design Details
+    
+    estimation_function = standardization,
+    estimation_arguments =
+      list(
+        estimand = "difference",
+        outcome_formula = 
+          mrs_365d_binary ~ tx + age + male + hx_cvd + hx_hyperlipidemia +
+          on_anticoagulants + on_antiplatelets + ich_location + ich_s_volume +
+          ivh_s_volume + gcs_category,
+        family = binomial,
+        treatment_column = "tx",
+        outcome_indicator_column = ".r_3"
+      ),
+    correction_function = standardization_correction
+  )
+
+# Decision
+interim_analysis_asof_bsof_1$interim_analysis_1$decision_detail
+
+# Test statistics, Boundaries
+interim_analysis_asof_bsof_1$interim_analysis_1$decision_data
+```
